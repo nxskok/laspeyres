@@ -1,0 +1,235 @@
+---
+title: "lux"
+format: html
+---
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(rvest)
+```
+
+get hold of a spreadsheet workbook with lots of sheets in it
+
+```{r}
+my_url <- "https://is.gd/1vvBAc"
+raw_data_xlsx <- tempfile(fileext = ".xlsx")
+download.file(my_url, raw_data_xlsx, method = "auto", mode = "wb")
+raw_data_xlsx
+```
+
+list the sheets we have
+
+```{r}
+sheets <- excel_sheets(raw_data_xlsx)
+sheets
+```
+
+function to read and clean one spreadsheet
+
+```{r}
+read_clean <- function(..., sheet) {
+  read_excel(..., sheet = sheet) %>% 
+    mutate(year = sheet)
+}
+```
+
+do it for all the sheets
+
+```{r}
+map(sheets, 
+    \(x) read_clean(raw_data_xlsx, skip = 10, sheet = x)) %>% 
+    bind_rows() %>% 
+    clean_names() -> raw0
+raw0
+```
+
+tidy
+
+```{r}
+raw0 %>% 
+  rename(
+    locality = commune, 
+    n_offers = nombre_doffres,
+    average_price_nominal_euros = prix_moyen_annonce_en_courant,
+    average_price_m2_nominal_euros = prix_moyen_annonce_au_m2_en_courant
+  ) %>% 
+  mutate(locality = str_trim(locality)) %>% 
+  select(year, locality, n_offers, starts_with("average")) -> raw_data
+raw_data
+```
+
+check
+
+```{r}
+raw_data %>% 
+  filter(str_detect(locality, "Luxembourg"))
+```
+
+Luxembourg City was renamed in 2012, also:
+
+```{r}
+raw_data %>% 
+  filter(str_detect(locality, "P.tange"))
+```
+
+Change both of these:
+
+```{r}
+raw_data %>% 
+  mutate(locality = case_when(
+    locality == "Luxembourg-Ville" ~ "Luxembourg",
+    locality == "Petange"          ~ "Pétange",
+    .default = locality
+  )) -> raw_data
+raw_data
+```
+
+That seems to be all right:
+
+```{r}
+raw_data %>% 
+  filter(str_detect(locality, "Luxembourg") | str_detect(locality, "P.tange")) %>% 
+  count(locality)
+
+```
+
+check.
+
+
+convert averages to numeric
+
+```{r}
+raw_data %>% 
+  mutate(across(starts_with("average"), \(x) as.numeric(x))) -> raw_data
+raw_data
+```
+
+but there are some missings:
+
+```{r}
+raw_data %>% 
+  mutate(across(starts_with("average"), \(x) as.numeric(x))) %>% 
+  filter(is.na(average_price_nominal_euros))
+```
+
+get rid of junk
+
+```{r}
+raw_data %>% 
+  filter(!str_detect(locality, "Source")) -> raw_data
+raw_data
+```
+
+save commune level data
+
+```{r}
+raw_data %>% filter(!str_detect(locality, "nationale|offres"), !is.na(locality)) -> commune_level_data
+commune_level_data
+```
+
+national
+
+```{r}
+raw_data %>% 
+  filter(str_detect(locality, "nationale")) %>% 
+  select(-n_offers) %>% 
+  mutate(locality = "Grand Duchy of Luxembourg") -> country_level
+country_level
+```
+
+```{r}
+raw_data %>% 
+  filter(str_detect(locality, "offres")) %>% 
+  select(year, n_offers) -> offers_country
+offers_country
+```
+
+```{r}
+full_join(country_level, offers_country, join_by("year")) %>% 
+  select(year, locality, n_offers, everything()) -> country_level_data
+country_level_data
+```
+
+grab all the communes from wikipedia
+
+```{r}
+"https://w.wiki/6nPu" %>% 
+  read_html() %>% 
+  html_table() %>% 
+  pluck(1) %>% 
+  clean_names() -> current_communes
+current_communes
+```
+
+are all the ones in  our data also in here?
+
+```{r}
+commune_level_data %>% 
+  count(locality) %>% 
+  anti_join(current_communes, join_by("locality"=="name_2"))
+```
+
+make a list of former communes
+
+```{r}
+"https://w.wiki/_wFe7" %>% 
+  read_html() %>% 
+  html_table() %>% 
+  pluck(3) %>% 
+  clean_names() %>% 
+  filter(year_dissolved > 2009) -> former_communes
+former_communes
+```
+
+combine current and former communes
+
+```{r}
+current_communes %>% select(name = name_2) %>% 
+  full_join(former_communes, join_by("name")) -> all_communes
+all_communes
+```
+
+redo check
+
+```{r}
+commune_level_data %>% 
+  count(locality) %>% 
+  anti_join(all_communes, join_by("locality"=="name"))
+```
+
+these ones exist in the wikipedia lists, but are spelled differently (hand-checked), so we are now good.
+
+```{r}
+all_communes %>% 
+  mutate(id = row_number()) -> all_communes
+all_communes
+changes <- tribble(
+  ~id, ~name,
+  106, "Clémency",
+  26, "Erpeldange",
+  43, "Kaerjeng",
+  55, "Luxembourg"
+)
+changes
+```
+
+```{r}
+all_communes %>% 
+  rows_update(changes, by = "id") -> all_communes
+commune_level_data %>% 
+  count(locality) %>% 
+  anti_join(all_communes, join_by("locality"=="name"))
+```
+
+solved
+
+save the two datasets as csvs
+
+```{r}
+here::here("x.csv")
+write_csv(commune_level_data, here::here("commune_level_data.csv"))
+write_csv(country_level_data, here::here("country_level_data.csv"))
+```
+
