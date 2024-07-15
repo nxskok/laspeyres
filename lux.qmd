@@ -26,7 +26,7 @@ sheets <- excel_sheets(raw_data_xlsx)
 sheets
 ```
 
-function to read and clean one spreadsheet
+function to read and clean one spreadsheet, with extra text
 
 ```{r}
 read_clean <- function(..., sheet) {
